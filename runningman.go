@@ -9,44 +9,61 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-func polling(update chan bool) {
-	db, err := sql.Open("mysql", "")
-	defer db.Close()
-	if err != nil {
-		panic("Cannot connect to db")
-	}
+func polling(update chan time.Time, db *sql.DB) {
+	ticker := time.NewTicker(time.Second)
+	var last time.Time
 
-	count := 0
-	err = db.QueryRow(`SELECT COUNT(*) FROM table1
-	WHERE updated_datetime > DATE_SUB(now(), INTERVAL 1 MINUTE)`).Scan(&count)
+	for _ = range ticker.C {
 
-	if err != nil {
-		fmt.Println(err)
-	}
+		var t time.Time
 
-	fmt.Printf("Got: %d\n", count)
+		fmt.Println("Polling")
+		err := db.QueryRow(`SELECT updated_datetime FROM table1 ORDER BY updated_datetime DESC`).Scan(&t)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
 
-	if count > 0 {
-		// action
-		update <- true
+		if t.After(last) && !last.IsZero() {
+			update <- t
+		}
+
+		last = t
 	}
 
 }
 
 func main() {
-	// polling db
-	ticker := time.NewTicker(time.Second)
-	update := make(chan bool)
-	go func() {
-		for _ = range ticker.C {
-			fmt.Println("Polling")
-			polling(update)
-		}
-	}()
 
-	// listen
-	fmt.Println("Main")
-	for _ = range update {
-		fmt.Println("New restaurant")
+	db, err := sql.Open("mysql", "test:test@tcp(192.168.59.103:3306)/test?parseTime=true")
+	defer db.Close()
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	// polling db
+	update := make(chan time.Time)
+	go polling(update, db)
+
+	for last := range update {
+		rows, err := db.Query("SELECT name FROM table1 WHERE updated_datetime >= ?", last)
+		defer rows.Close()
+		if err != nil {
+			fmt.Println("Cannot get name")
+			continue
+		}
+
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				fmt.Println(err)
+				continue
+			}
+
+			// processing
+			time.Sleep(time.Second)
+			fmt.Printf("Updated %s\n", name)
+		}
 	}
 }
